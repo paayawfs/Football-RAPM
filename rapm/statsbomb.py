@@ -2,9 +2,11 @@
 
 import json
 import logging
+import time
 import warnings
 
 import pandas as pd
+import requests
 from statsbombpy import sb
 
 from rapm import RAW
@@ -22,6 +24,17 @@ SEASONS = {
 OUT = RAW / "statsbomb"
 
 
+def _retry(fn, tries=6, **kw):
+    """raw.githubusercontent.com returns transient 503s; back off and retry."""
+    for i in range(tries):
+        try:
+            return fn(**kw)
+        except requests.HTTPError:
+            if i == tries - 1:
+                raise
+            time.sleep(2**i)
+
+
 def _stringify_dicts(df):
     """Parquet cannot hold columns that mix dicts and None across matches; store dicts as JSON."""
     for c in df.columns:
@@ -32,7 +45,7 @@ def _stringify_dicts(df):
 
 def lineups(match_id):
     rows, spells, cards = [], [], []
-    for team, df in sb.lineups(match_id=match_id).items():
+    for team, df in _retry(sb.lineups, match_id=match_id).items():
         for _, p in df.iterrows():
             base = {"match_id": match_id, "team": team, "player_id": p.player_id,
                     "player_name": p.player_name, "jersey_number": p.jersey_number}
@@ -51,7 +64,7 @@ def fetch(cid, sid):
     for i, mid in enumerate(matches.match_id):
         p, s, c = lineups(mid)
         players.append(p), spells.append(s), cards.append(c)
-        events.append(sb.events(match_id=mid))
+        events.append(_retry(sb.events, match_id=mid))
         if i % 25 == 0:
             log.info("%s: %d/%d", out.name, i, len(matches))
     out.mkdir(parents=True, exist_ok=True)
