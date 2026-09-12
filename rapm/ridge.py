@@ -34,14 +34,30 @@ def _row_scale(X, w):
 
 
 def _drop_degenerate(Xw, penalized):
-    """An unpenalised column that is exactly zero in this block -- e.g. ghost_games
-    for a pre-2020 league-season, or a score/minute bucket a small block never visits
-    -- makes M+D exactly singular, since nothing regularises it. Its effect can't be
-    estimated from this block and is 0 by convention; drop it from the solve rather
-    than fail, and report a value of 0 for it in the final result. A near-zero column
-    isn't touched -- only an exact zero, which is the case that breaks the solve."""
-    col_norm = np.asarray(Xw.multiply(Xw).sum(axis=0)).ravel() if sp.issparse(Xw) else (Xw**2).sum(axis=0)
-    keep = penalized | (col_norm > 0)
+    """M+D can only be singular along a direction supported entirely on unpenalised
+    coordinates: D adds lam to every penalised diagonal entry, which alone rules out
+    a null vector with any penalised-coordinate support (M+D is PSD, so v'(M+D)v=0
+    forces v'Dv=0, i.e. v is zero everywhere D is positive). So it is enough to check
+    the unpenalised columns for exact linear dependence -- not just the all-zero case
+    (a bucket a small block never visits) but real collinearity between two nonzero
+    controls, e.g. ghost_games and the block's own single intercept becoming identical
+    for a league-season that falls entirely inside the no-crowds window. Detected by
+    a plain Gram-Schmidt pass, cheap since the unpenalised block is a handful of
+    columns; a dependent column's effect can't be estimated from this block and is 0
+    by convention, so it is dropped from the solve rather than left to fail it."""
+    unpen_idx = np.flatnonzero(~penalized)
+    unpen = Xw[:, unpen_idx]
+    unpen = unpen.toarray() if sp.issparse(unpen) else unpen  # a handful of columns, cheap either way
+    keep = np.ones(Xw.shape[1], dtype=bool)
+    basis = np.zeros((Xw.shape[0], 0))
+    for k, j in enumerate(unpen_idx):
+        v = unpen[:, k]
+        resid = v - basis @ (basis.T @ v) if basis.shape[1] else v
+        norm = np.linalg.norm(resid)
+        if norm <= 1e-8 * max(np.linalg.norm(v), 1.0):
+            keep[j] = False
+        else:
+            basis = np.hstack([basis, (resid / norm)[:, None]])
     return keep if not keep.all() else None
 
 
