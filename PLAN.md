@@ -289,6 +289,14 @@ Unit: league-season, full seasons only. 2019-20 enters as its pre-lockdown match
 
 Regression for each metric: `metric = alpha_league + gamma_season + delta * five_subs + error`. With 5 leagues and 12 seasons inference is thin, so this is presented as an event-study figure (metric relative to adoption year, Premier League reversal drawn separately) with match-level block-bootstrap intervals on each point, not as a regression with asymptotic standard errors. Causal weight rests on 5.4 and 5.5.
 
+### 5.3 status (built and run 2026-09-12, `scripts/07_event_study.py`, all 60 league-seasons)
+
+Every league-season refit at its own CV-selected lambda, then a 50-draw match-level bootstrap per block (`table_event_study.parquet`, 360 rows). `years_since_adoption` is computed relative to each league's own first five-sub season (2020 for La Liga, Serie A, Bundesliga, Ligue 1; 2022 for the Premier League, whose 2020-restart-then-revert path is reported as its own series rather than aligned with the other four, per the plan).
+
+**Important caveat, not a bug:** the bootstrap interval on a *single* block's `effective_rank` and `condition_number_trimmed` sits noticeably below that block's own point estimate (e.g. Bundesliga 2014, point 211.2, bootstrap 5th-95th 163.8-173.3). This is a known property of case-resampling a rank-like statistic: resampling matches with replacement always introduces duplicate rows, which reduces the resampled panel's effective diversity below the real panel's, biasing rank-type quantities down. It is not a symmetric confidence band around the point estimate and should not be read as one; it is still informative as a measure of *sampling spread*, and — critically — this shared bias cancels out in a paired comparison (same resampling draw applied to both arms at once), which is exactly why 5.4's truncation test below uses a paired bootstrap rather than this single-arm kind.
+
+**Pattern, pooled across La Liga/Serie A/Bundesliga/Ligue 1 (mean of 4 leagues per point):** `effective_rank` averages 208.7 across the six pre-adoption seasons and 217.1 across the six post-adoption seasons, with the sharpest single-season change right at adoption (223.6 in year 0, the highest value in the whole 12-year series for these leagues). `condition_number_trimmed` mirrors this: higher (worse) pre-adoption, dropping to its series low (117.5) in year 0. The Premier League's own series (relative to its 2022 adoption, on the 12-season window its data covers) shows the same qualitative pattern despite its more complicated three-year detour: `effective_rank` averages 197.3 across the eight seasons before 2022 and 206.9 across 2022-2024, and `condition_number_trimmed` drops from a noisy 256.6 average pre-2022 (inflated by 2019-20's restart-complicated season) to 188.1 after. Both patterns move in the direction H1 predicts, with the change concentrated around the actual adoption year rather than a smooth trend — but this is still descriptive, pooled-block evidence, not a controlled comparison; that is what section 5.4 is for.
+
 ### 5.4 Restart experiment and counterfactual truncation (Table 3, Table 4)
 
 **Restart experiment.** For each of the four leagues that restarted in 2020, compare the final `N` pre-lockdown matches with the `N` restart matches, same squads, same season. Report every metric in 5.1 and 5.2. This is the cleanest within-season switch from three to five subs.
@@ -296,6 +304,37 @@ Regression for each metric: `metric = alpha_league + gamma_season + delta * five
 **Counterfactual truncation.** This is the primary mechanism test for H1. For every five-sub match, keep each team's first three substitutions in chronological order and delete the fourth and fifth: the player who would have left stays on to 90, and the entrant never appears. Rebuild segments and the design matrix on these identical matches. Compare every metric between the actual and truncated designs. Confidence intervals by bootstrapping matches (500 draws). Outcomes cannot be reused under truncation because the player set differs, so this is a design-only comparison, which is exactly what identifiability is.
 
 Two variants: truncate to three subs but keep the last three (tests whether late subs carry the information), and delete all substitutions after minute 75 in both eras (tests whether the gain is purely late-game).
+
+### 5.4 status (built and run 2026-09-12)
+
+**Restart experiment** (`scripts/06_restart_experiment.py`, `table3_restart.parquet`): final N pre-lockdown vs. N restart matches, same season, shared lambda fit on the pooled pre+restart segments per league, 200-draw independent bootstrap (pre and restart matches are disjoint, so this uses `independent_bootstrap_diff`, not the paired version).
+
+`condition_number_trimmed` is unusable here and reported as a limitation rather than patched around: at this window size (82-124 matches, versus 279-380 for a full season), the 90th-percentile trim is not aggressive enough, and several blocks come back `inf` or on the order of 1e16-1e17 even at the point estimate — many players are genuinely ever-present within a window this short, a problem the full-season blocks used everywhere else in this section don't have. `effective_rank` has no such issue and is the reliable metric for this comparison:
+
+| League | Matches (N) | Effective rank, pre-lockdown | Effective rank, restart | Diff (restart − pre), median [90% CI] |
+|---|---|---|---|---|
+| Premier League | 92 | 74.8 | 88.4 | +10.9 [0.9, 18.8] |
+| La Liga | 110 | 98.7 | 115.5 | +10.3 [1.4, 20.2] |
+| Bundesliga | 82 | 73.8 | 86.2 | +9.0 [0.8, 16.2] |
+| Serie A | 124 | 103.5 | 127.8 | +16.2 [6.8, 25.6] |
+
+Effective rank rises in every one of the four leagues, same squads and same season, only the substitution rule changed — and the 90% bootstrap interval excludes zero in all four. `id_share_median` moves the same direction in all four (+0.001 to +0.006) but is only clearly significant in two (La Liga, Serie A); `edf` likewise positive in all four, significant in two.
+
+**Counterfactual truncation** (`scripts/05_truncation_experiment.py`, `table4_truncation.parquet`): one representative recent five-sub season per league (2024, the most recent complete season available for all five), each team's 4th and 5th substitutions deleted (primary "first" variant) and, separately, its 1st and 2nd deleted instead (secondary "last" variant, 100 draws not 500 — see PLAN.md's stated purpose for this variant). Same lambda used for the actual and truncated fit of a league (fit once on the real design), and the 500-draw bootstrap is *paired* — each draw resamples match ids once and refits both designs on that identical resample, so the reported interval is on the difference directly, not two marginals subtracted after the fact.
+
+| League | Cond. number (trimmed), actual → truncated | Effective rank, actual → truncated | Effective rank diff, median [90% CI] |
+|---|---|---|---|
+| Premier League | 150.7 → 187.8 | 213.0 → 209.0 | +5.0 [4.3, 6.0] |
+| La Liga | 140.2 → 170.3 | 238.6 → 231.5 | +8.7 [7.7, 10.1] |
+| Bundesliga | 124.1 → 152.6 | 188.4 → 182.3 | +6.9 [5.9, 8.1] |
+| Serie A | 157.6 → 201.5 | 226.7 → 218.0 | +9.7 [8.4, 11.1] |
+| Ligue 1 | 187.2 → 219.2 | 185.5 → 180.9 | +5.1 [4.3, 6.0] |
+
+Every one of the five leagues moves the same way on both metrics, and the 90% paired-bootstrap interval on the effective-rank difference excludes zero in all five (narrowly: the widest interval is about 1.3 points wide against an effect of 5-10 points). `condition_number_trimmed` and `id_share_median` move the same direction in all five as well. Given only the substitution rule differs — same matches, same players, same outcomes withheld entirely from the comparison — this is the cleanest evidence in the whole identifiability analysis that five substitutions mechanically improve identifiability, and it directly supports H1 rather than merely being consistent with it.
+
+The secondary "last" variant (delete the 1st/2nd subs instead of the 4th/5th) makes the effective-rank gap two-to-four times larger (+19.6 to +27.0, all five leagues) than the primary variant. Since the "last" variant keeps only the late substitutions and discards the early ones, this says the *early* substitutions carry more of the identifying information than the late ones — consistent with the plan's own concern (section 27) that most extra subs land after minute 75, when there is little match time left to observe the entrant with.
+
+**Not yet run:** the third variant (delete all substitutions after minute 75 in both eras) and the full sweep across all 28 five-sub league-seasons rather than one representative season per league — both are straightforward extensions of what's built, not new mechanism.
 
 ### 5.5 Simulation recovery (Table 4, Figure 4)
 
