@@ -115,12 +115,12 @@ def build_segments(match, roster, shots):
     return pd.DataFrame(rows)
 
 
-def build_league_season(base):
-    """base: a data/raw/understat/{league}/{season} directory. Returns its segment table."""
-    matches = pd.read_parquet(base / "matches.parquet")
-    matches = matches[matches.is_result & ~matches.match_id.isin(QUARANTINE)]
-    rosters = pd.read_parquet(base / "rosters.parquet")
-    shots = pd.read_parquet(base / "shots.parquet")
+def build_from_frames(matches, rosters, shots):
+    """matches/rosters/shots: already-loaded DataFrames for one league-season (or any
+    match subset) -- e.g. rosters that have been through counterfactual truncation
+    (PLAN.md section 5.4), which build_league_season's disk-reading wrapper can't
+    express. Returns the segment table, applying the same >11-players corrupt-roster
+    guard as build_league_season."""
     out = []
     for match in matches.itertuples():
         r = rosters[rosters.match_id == match.match_id]
@@ -138,3 +138,12 @@ def build_league_season(base):
             continue
         out.append(seg)
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
+
+
+def build_league_season(base):
+    """base: a data/raw/understat/{league}/{season} directory. Returns its segment table."""
+    matches = pd.read_parquet(base / "matches.parquet")
+    matches = matches[matches.is_result & ~matches.match_id.isin(QUARANTINE)]
+    rosters = pd.read_parquet(base / "rosters.parquet")
+    shots = pd.read_parquet(base / "shots.parquet")
+    return build_from_frames(matches, rosters, shots)
