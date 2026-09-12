@@ -4,6 +4,7 @@ import logging
 import time
 
 import pandas as pd
+import requests
 import requests_cache
 
 from rapm import RAW
@@ -21,9 +22,20 @@ OUT.mkdir(parents=True, exist_ok=True)
 session = requests_cache.CachedSession(str(OUT / "cache.sqlite"), expire_after=None)
 
 
-def get(url):
-    r = session.get(url, headers=HEADERS, timeout=30)
-    r.raise_for_status()
+def get(url, tries=8):
+    """A six-hour unattended scrape hits the occasional connection reset; without a
+    retry here, one blip kills every league-season still to come (as happened on the
+    first overnight run). Cached responses replay for free, so a generous budget costs
+    nothing on the common path."""
+    for i in range(tries):
+        try:
+            r = session.get(url, headers=HEADERS, timeout=30)
+            r.raise_for_status()
+            break
+        except requests.exceptions.RequestException:
+            if i == tries - 1:
+                raise
+            time.sleep(min(2**i, 30))
     if not getattr(r, "from_cache", False):
         time.sleep(1)  # one live request per second
     return r.json()
