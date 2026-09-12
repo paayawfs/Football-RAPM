@@ -68,7 +68,17 @@ def league_matches(league, year):
 
 def match_data(match_id):
     d = get(f"{BASE}/getMatchData/{match_id}")
-    rosters = pd.DataFrame([r for side in "ha" for r in d["rosters"][side].values()])
+    rows = []
+    for side in "ha":
+        roster = d["rosters"][side]
+        if not isinstance(roster, dict):
+            # Understat sends [] instead of {} for some malformed/void fixtures; without
+            # this check the whole league-season crashed on one such match (Bundesliga
+            # 2024 lost entirely to it on the first overnight run).
+            log.warning("match %s side %s has no roster data: %r", match_id, side, roster)
+            continue
+        rows += roster.values()
+    rosters = pd.DataFrame(rows)
     shots = pd.DataFrame(d["shots"]["h"] + d["shots"]["a"])
     rosters["match_id"] = match_id
     if not shots.empty:
@@ -85,9 +95,10 @@ def scrape(league, year):
     rosters, shots = [], []
     for i, mid in enumerate(played.match_id):
         r, s = match_data(mid)
-        starters = r[r.position != "Sub"].groupby("h_a").size()
-        if not (starters == 11).all():
-            log.warning("match %s starters per side: %s", mid, starters.to_dict())
+        if not r.empty:
+            starters = r[r.position != "Sub"].groupby("h_a").size()
+            if not (starters == 11).all():
+                log.warning("match %s starters per side: %s", mid, starters.to_dict())
         rosters.append(r)
         shots.append(s)
         if i % 50 == 0:
