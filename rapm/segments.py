@@ -6,8 +6,12 @@ section 4.2). Conventions below are numbered to match the plan and asserted by
 tests/test_segments.py.
 """
 
+import logging
+
 import numpy as np
 import pandas as pd
+
+log = logging.getLogger(__name__)
 
 QUARANTINE = {
     # roster malformed (both sides []), no shot data at all
@@ -122,5 +126,14 @@ def build_league_season(base):
         s = shots[shots.match_id == match.match_id]
         if r.empty:
             continue
-        out.append(build_segments(match, r, s))
+        seg = build_segments(match, r, s)
+        if (seg.n_home > 11).any() or (seg.n_away > 11).any():
+            # A team fielding more than 11 means the raw roster is corrupt, not that the
+            # chain resolution is wrong -- e.g. match 23028 (La_liga 2023) has every
+            # player's roster row duplicated wholesale under a second id. Skip rather
+            # than silently emit an impossible lineup.
+            log.warning("match %s: >11 players on a side, skipping (roster looks duplicated)",
+                        match.match_id)
+            continue
+        out.append(seg)
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
