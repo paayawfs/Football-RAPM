@@ -310,6 +310,32 @@ For each block's design (pre-era, post-era, post-era truncated):
 
 Because only X differs across arms, nothing about era-specific play styles, xG model drift or COVID can affect this comparison. If the truncated design recovers effects as well as the actual design, H1 is rejected regardless of what the real-data stability shows.
 
+### 5.1-5.2 status (built and run 2026-09-12, all 60 league-seasons)
+
+`rapm/descriptive.py` (section 5.1) and `rapm/identify.py` (section 5.2) are built, tested (`tests/test_identify.py`), and run across every league-season, writing `data/processed/table1_descriptive.parquet` and `table2_identifiability.parquet`. Two real bugs surfaced and were fixed along the way:
+
+1. **Parquet schema corruption.** Once all 60 league-seasons' segments were concatenated (but not on any single block, nor a two-block test), pyarrow's type inference silently widened the `home_players`/`away_players` list columns from `list<int64>` to `list<double>` — every player id came back as e.g. `314.0`. `scripts/02_build_segments.py` now casts those two columns to `list<int64>` explicitly before writing, rather than depending on inference.
+2. **A second, more general collinearity than the one already fixed in phase 2.** Every 2020-21 league-season (Bundesliga, EPL, La Liga, Ligue 1, Serie A) hit the same `LinAlgError: Singular matrix` inside CV, for a new reason: that whole season falls 100% inside the ghost-games window, so `ghost_games` becomes identical to the block's own single intercept column — two *nonzero* unpenalised controls colliding, not the all-zero case already handled. `ridge._drop_degenerate` now does a general Gram-Schmidt independence pass over the unpenalised columns (cheap: there are only ~12 of them, even against a large pooled `X`) rather than only checking for exact zero.
+
+**Table 2's `condition_number` (untrimmed) is `inf` for all 60 of 60 league-seasons.** This is not a bug: essentially every team-season has at least one truly ever-present player (a #1 goalkeeper who plays every minute of every match is the obvious case), whose within-team-projected column is then *exactly* zero. `condition_number_trimmed` (`e_1 / e_{0.9p}`), effective rank, and identification share are therefore the metrics doing the real work in every comparison below, exactly as section 5.2 anticipated in specifying the trimmed version.
+
+**Raw era comparison, pooled across all five leagues and 60 league-seasons (32 three-sub, 28 five-sub), no matched-match-count subsampling or controls yet:**
+
+| Metric | Three-sub era | Five-sub era | Direction vs. H1 |
+|---|---|---|---|
+| Subs used per team-match | 2.91 | 4.41 | mechanical, as expected |
+| Distinct on-pitch lineups per team-season (median) | 123.8 | 134.3 | ✓ more variation |
+| Lineup Herfindahl per team-season (median) | 0.0188 | 0.0178 | ✓ less concentrated |
+| Substitute minutes, share of all minutes | 0.056 | 0.077 | ✓ more sub exposure |
+| Mean abs. teammate exposure correlation | 0.146 | 0.133 | ✓ less collinear |
+| Condition number, trimmed (mean) | 190.1 | 146.8 | ✓ better conditioned |
+| Effective rank (mean) | 205.9 | 215.7 | ✓ higher |
+| Effective degrees of freedom (mean) | 39.6 | 41.6 | ✓ higher |
+| Identification share, median (mean across blocks) | 0.107 | 0.111 | ✓ higher, but tiny |
+| Identification share, share of players > 0.5 | 0.0 | 0.0 | no season, either era, gets even one player past 0.5 |
+
+Every metric moves in the direction H1 predicts. This is worth taking seriously but not yet as evidence: it is the raw, unadjusted, pooled-across-leagues comparison section 5.3 explicitly warns against over-reading (five-sub seasons skew later, so this comparison cannot separate the rule change from any other trend over time — league mix, tactical evolution, the pandemic itself). It is also a small effect in absolute terms — even in the best case, no league-season gets a single player above 0.5 identification share, i.e. even under five subs the data still trusts the ridge prior more than the data for every player in a single season. The real test is 5.4's within-season restart comparison and counterfactual truncation, which hold everything except the substitution rule fixed; that, plus the matched-match-count/bootstrap machinery of 5.3, plus simulation recovery in 5.5, is the next phase of work.
+
 ---
 
 ## 6. Stability
