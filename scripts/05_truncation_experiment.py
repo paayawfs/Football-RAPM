@@ -16,7 +16,7 @@ import logging
 import pandas as pd
 
 from rapm import PROCESSED, RAW
-from rapm.compare import METRICS, paired_bootstrap_diff
+from rapm.compare import METRICS, metrics_row, paired_bootstrap_diff
 from rapm.design import build_net_design
 from rapm.identify import identifiability_metrics
 from rapm.ridge import select_lambda
@@ -51,10 +51,12 @@ for league, season in SAMPLE:
              league, season, m_actual.condition_number_trimmed, m_actual.effective_rank,
              m_actual.identification_share.median(), lam)
 
+    row_actual = metrics_row(m_actual)
     for variant, n_draws in [("first", N_DRAWS_PRIMARY), ("last", N_DRAWS_VARIANT)]:
         trunc_rosters = truncate_league_season(rosters, keep=3, variant=variant)
         seg_trunc = build_from_frames(matches, trunc_rosters, shots)
         m_trunc = identifiability_metrics(seg_trunc, lam=lam)
+        row_trunc = metrics_row(m_trunc)
         log.info("%s %s [%s]: truncated cond_trim=%.1f eff_rank=%.1f id_share_med=%.4f",
                  league, season, variant, m_trunc.condition_number_trimmed,
                  m_trunc.effective_rank, m_trunc.identification_share.median())
@@ -63,13 +65,17 @@ for league, season in SAMPLE:
         for metric in METRICS:
             rows.append(dict(
                 league=league, season=season, variant=variant, metric=metric,
-                actual=getattr(m_actual, metric), truncated=getattr(m_trunc, metric),
+                actual=row_actual[metric], truncated=row_trunc[metric],
                 diff_median=diff[metric].median(),
                 diff_p05=diff[metric].quantile(0.05), diff_p95=diff[metric].quantile(0.95),
                 n_draws=n_draws,
             ))
         log.info("%s %s [%s]: bootstrap done (%d draws)", league, season, variant, n_draws)
 
-result = pd.DataFrame(rows)
-result.to_parquet(PROCESSED / "table4_truncation.parquet", index=False)
-log.info("done: %d rows", len(result))
+    # save after each league-season, not only at the very end -- a later crash
+    # (or the next league in SAMPLE simply not existing/failing) shouldn't cost
+    # already-completed bootstrap runs, which are the expensive part here.
+    pd.DataFrame(rows).to_parquet(PROCESSED / "table4_truncation.parquet", index=False)
+    log.info("%s %s: saved (%d rows so far)", league, season, len(rows))
+
+log.info("done: %d rows", len(rows))
