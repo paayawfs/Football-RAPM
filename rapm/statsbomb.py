@@ -7,6 +7,7 @@ import warnings
 
 import pandas as pd
 import requests
+import requests_cache
 from statsbombpy import sb
 
 from rapm import RAW
@@ -23,16 +24,26 @@ SEASONS = {
 }
 OUT = RAW / "statsbomb"
 
+# statsbombpy calls plain requests.get() internally with no session and no cache.
+# raw.githubusercontent.com's shared backend pool returns transient 503s under sustained
+# sequential load, and a crash partway through fetch() otherwise discards every match
+# already downloaded. install_cache() patches requests globally, so a rerun after a
+# crash replays finished matches from disk instantly instead of re-hitting the network.
+OUT.mkdir(parents=True, exist_ok=True)
+requests_cache.install_cache(str(OUT / "http_cache.sqlite"), expire_after=None)
 
-def _retry(fn, tries=6, **kw):
-    """raw.githubusercontent.com returns transient 503s; back off and retry."""
+
+def _retry(fn, tries=10, **kw):
+    """Backstop for the rare persistent outage that outlasts a few retries; cached
+    successes make a generous budget here free on any subsequent run."""
+    time.sleep(0.2)
     for i in range(tries):
         try:
             return fn(**kw)
         except requests.HTTPError:
             if i == tries - 1:
                 raise
-            time.sleep(2**i)
+            time.sleep(min(2**i, 30))
 
 
 def _stringify_dicts(df):
@@ -59,7 +70,7 @@ def fetch(cid, sid):
     out = OUT / SEASONS[(cid, sid)]
     if (out / "events.parquet").exists():
         return
-    matches = sb.matches(competition_id=cid, season_id=sid)
+    matches = _retry(sb.matches, competition_id=cid, season_id=sid)
     players, spells, cards, events = [], [], [], []
     for i, mid in enumerate(matches.match_id):
         p, s, c = lineups(mid)
