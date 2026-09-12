@@ -46,11 +46,19 @@ def _retry(fn, tries=10, **kw):
             time.sleep(min(2**i, 30))
 
 
-def _stringify_dicts(df):
-    """Parquet cannot hold columns that mix dicts and None across matches; store dicts as JSON."""
+def _tidy_object_columns(df):
+    """Parquet needs one arrow type per column. Two StatsBomb quirks break that:
+    event qualifier columns mix dicts and None, and co-manager matches give id
+    columns (home_manager_id, home_manager_country_id, ...) a comma-joined string
+    like '4711, 3626' instead of an int. Store dicts as JSON; any other mixed-type
+    column (id columns are identifiers, never used arithmetically) becomes strings."""
     for c in df.columns:
-        if df[c].map(lambda v: isinstance(v, dict)).any():
-            df[c] = df[c].map(lambda v: json.dumps(v) if isinstance(v, dict) else v)
+        col = df[c]
+        types = {type(v) for v in col if not (v is None or (isinstance(v, float) and pd.isna(v)))}
+        if types == {dict}:
+            df[c] = col.map(lambda v: json.dumps(v) if isinstance(v, dict) else v)
+        elif len(types) > 1:
+            df[c] = col.map(lambda v: v if v is None or (isinstance(v, float) and pd.isna(v)) else str(v))
     return df
 
 
@@ -79,9 +87,9 @@ def fetch(cid, sid):
         if i % 25 == 0:
             log.info("%s: %d/%d", out.name, i, len(matches))
     out.mkdir(parents=True, exist_ok=True)
-    _stringify_dicts(matches).to_parquet(out / "matches.parquet", index=False)
+    _tidy_object_columns(matches).to_parquet(out / "matches.parquet", index=False)
     pd.concat(players).to_parquet(out / "lineups.parquet", index=False)
     pd.concat(spells).to_parquet(out / "positions.parquet", index=False)
     pd.concat(cards).to_parquet(out / "cards.parquet", index=False)
-    _stringify_dicts(pd.concat(events, ignore_index=True)).to_parquet(out / "events.parquet", index=False)
+    _tidy_object_columns(pd.concat(events, ignore_index=True)).to_parquet(out / "events.parquet", index=False)
     log.info("%s done: %d matches", out.name, len(matches))
