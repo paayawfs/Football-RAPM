@@ -25,7 +25,7 @@ def _row(id_, player, position, time, h_a, roster_out=0, red_card=0):
 
 def _match():
     m = pd.DataFrame([dict(match_id=1, league="EPL", season=2022,
-                            datetime="2022-10-01 15:00:00")])
+                            datetime="2022-10-01 15:00:00", home_id=100, away_id=200)])
     return next(m.itertuples())
 
 

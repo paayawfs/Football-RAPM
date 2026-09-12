@@ -232,6 +232,27 @@ Minimise `sum_s w_s (y_s - x_s b)^2 + lambda * sum_{j in penalised} b_j^2`.
 - Lambda selection: `GroupKFold(5)` grouped by `match_id`, 25-point log-spaced grid, choose the minimiser of weighted CV MSE. Record the one-standard-error lambda as well. For any comparison across eras also report every metric at one common lambda chosen on the pooled data, so lambda differences cannot drive the comparison.
 - Residual variance `sigma^2` is the weighted mean squared residual at the chosen lambda. Prior variance `tau^2 = sigma^2 / lambda` by the ridge-as-posterior-mode correspondence.
 
+### 4.3-4.5 status (built and verified 2026-09-12)
+
+`rapm/design.py` (`build_net_design`, `build_od_design`) and `rapm/ridge.py` (`fit_dense`, `fit_sparse`, `select_lambda`) are built, tested (`tests/test_design_ridge.py`, seven cases including a synthetic simulation-recovery check), and run on real data. Both models always build a sparse `X` — cheap for one league-season, necessary for the pooled panel — with player and team-season columns collapsed to one signed column per entity even when built from two one-sided blocks (a player who appears as both a home and away player in the same block must get a single shared coefficient, not two).
+
+One real bug surfaced and fixed along the way: an unpenalised control column that is identically zero within a block — `ghost_games` for any pre-2020 league-season, since it never has a COVID-crowds match — made `M + D` exactly singular. Both fit functions now drop an all-zero unpenalised column from the solve (its coefficient is 0 by convention, since nothing in the block can identify it) rather than failing; a near-zero-but-nonzero column is untouched.
+
+Verification run, Premier League 2022-23 (`scripts/03_fit_baseline.py`), Model 1 (net), dense path:
+
+| | |
+|---|---|
+| Design matrix | 3,208 rows x 574 columns (562 penalised: 542 players + 20 team-seasons; 12 controls) |
+| `lambda_min` (5-fold `GroupKFold`) | 5,623 |
+| Weighted R² vs. mean-only | 0.062 |
+| Condition number, penalised block of `M` (pre-ridge) | 1.3e21 |
+
+That condition number is not a bug — it is the headline fact motivating this whole project: at a single league-season, the raw player-plus-team design is so collinear it is numerically singular in double precision (machine epsilon is ~1e-16), because a team's own eleven players on the pitch sum almost exactly to eleven times that team's own dummy column. Ridge resolves it, but this is exactly the pre-ridge conditioning that section 5's identifiability metrics (condition number, effective rank, CV-optimal lambda) are built to track pre/post five-substitution.
+
+`lambda_1se` hit the top of the default `1e-1` to `1e5` grid on this block. Re-run with the grid extended to `1e8`: `lambda_min` is a genuine interior minimum (5,456, confirmed by the CV curve turning back up past it), but `lambda_1se` still lands on the boundary no matter how far the grid extends, because the CV-MSE curve asymptotes to a ceiling (~18.29) as `lambda -> infinity` — i.e. the fully-shrunk-to-zero, players-and-teams-contribute-nothing model — and that ceiling sits within one SE of the minimum (17.66). This is not a solver artifact; it is direct evidence that a single league-season alone cannot statistically distinguish "no player or team effects" from the best-fitting model, which is exactly the weak-identifiability problem this project exists to characterise. It says nothing yet about the pooled multi-season panel, where far more rows should narrow that band; the grid should still default wider (`1e-1` to `1e7`, say) so `lambda_min` is never mistaken for a boundary artifact there, but `lambda_1se` sitting at the edge for a single block is a result, not a bug.
+
+Also verified: `fit_dense` and `fit_sparse` agree to ~1e-9 on identical inputs (confirms the augmented-lsqr sparse path is an exact solve, not an approximation), and the O/D model (Model 2) fits on the same data with plausible, bounded O/D coefficients.
+
 ---
 
 ## 5. Identifiability analysis (primary contribution)

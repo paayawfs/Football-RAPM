@@ -103,6 +103,7 @@ def build_segments(match, roster, shots):
         rows.append(dict(
             match_id=match.match_id, league=match.league, season=match.season,
             era=era(match.league, match.season, match.datetime[:10]), date=match.datetime,
+            home_id=match.home_id, away_id=match.away_id,
             seg_idx=i, start=start, end=end, dur=end - start,
             home_players=home_players, away_players=away_players,
             n_home=len(home_players), n_away=len(away_players),
