@@ -6,6 +6,8 @@ import time
 import warnings
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import requests
 import requests_cache
 from statsbombpy import sb
@@ -46,19 +48,25 @@ def _retry(fn, tries=10, **kw):
             time.sleep(min(2**i, 30))
 
 
+def _is_missing(v):
+    return v is None or (isinstance(v, float) and pd.isna(v))
+
+
 def _tidy_object_columns(df):
     """Parquet needs one arrow type per column. Two StatsBomb quirks break that:
     event qualifier columns mix dicts and None, and co-manager matches give id
     columns (home_manager_id, home_manager_country_id, ...) a comma-joined string
-    like '4711, 3626' instead of an int. Store dicts as JSON; any other mixed-type
-    column (id columns are identifiers, never used arithmetically) becomes strings."""
+    like '4711, 3626' instead of an int. Every object-dtype column becomes a plain
+    string (JSON-encoding dicts/lists) unconditionally, rather than only when a mix
+    of types is actually seen: that makes each column's arrow type depend solely on
+    its pandas dtype, never on which values happen to appear in a given slice of
+    matches, which is what lets events be written in batches (see fetch()) without
+    a schema mismatch between batches."""
     for c in df.columns:
-        col = df[c]
-        types = {type(v) for v in col if not (v is None or (isinstance(v, float) and pd.isna(v)))}
-        if types == {dict}:
-            df[c] = col.map(lambda v: json.dumps(v) if isinstance(v, dict) else v)
-        elif len(types) > 1:
-            df[c] = col.map(lambda v: v if v is None or (isinstance(v, float) and pd.isna(v)) else str(v))
+        if df[c].dtype == object:
+            df[c] = df[c].map(
+                lambda v: v if _is_missing(v) else (json.dumps(v) if isinstance(v, (dict, list)) else str(v))
+            )
     return df
 
 
@@ -74,22 +82,41 @@ def lineups(match_id):
     return pd.DataFrame(rows), pd.DataFrame(spells), pd.DataFrame(cards)
 
 
+EVENT_BATCH = 40  # matches per Arrow table; a full season's raw events pushed memory
+                   # high enough that the whole fetch got OS-killed partway through
+
+
+def _events_table(raw_frames):
+    """Tidy and convert one batch of per-match event frames to a compact Arrow table,
+    so the raw pandas frames for a whole season are never all alive at once."""
+    return pa.Table.from_pandas(_tidy_object_columns(pd.concat(raw_frames, ignore_index=True)),
+                                 preserve_index=False)
+
+
 def fetch(cid, sid):
     out = OUT / SEASONS[(cid, sid)]
     if (out / "events.parquet").exists():
         return
     matches = _retry(sb.matches, competition_id=cid, season_id=sid)
-    players, spells, cards, events = [], [], [], []
+    players, spells, cards, event_tables, raw = [], [], [], [], []
     for i, mid in enumerate(matches.match_id):
         p, s, c = lineups(mid)
         players.append(p), spells.append(s), cards.append(c)
-        events.append(_retry(sb.events, match_id=mid))
+        raw.append(_retry(sb.events, match_id=mid))
+        if len(raw) >= EVENT_BATCH:
+            event_tables.append(_events_table(raw))
+            raw = []
         if i % 25 == 0:
             log.info("%s: %d/%d", out.name, i, len(matches))
+    if raw:
+        event_tables.append(_events_table(raw))
     out.mkdir(parents=True, exist_ok=True)
     _tidy_object_columns(matches).to_parquet(out / "matches.parquet", index=False)
     pd.concat(players).to_parquet(out / "lineups.parquet", index=False)
     pd.concat(spells).to_parquet(out / "positions.parquet", index=False)
     pd.concat(cards).to_parquet(out / "cards.parquet", index=False)
-    _tidy_object_columns(pd.concat(events, ignore_index=True)).to_parquet(out / "events.parquet", index=False)
+    # promote_options handles a column being e.g. int64 in one batch and all-null
+    # (float64) in another, which plain concatenation would otherwise reject.
+    events = pa.concat_tables(event_tables, promote_options="permissive")
+    pq.write_table(events, out / "events.parquet")
     log.info("%s done: %d matches", out.name, len(matches))
