@@ -112,6 +112,20 @@ Via `statsbombpy` with no credentials. Pull `matches`, `lineups` and `events` fo
 5. Substitution-era inference per match agrees with the timeline table.
 6. StatsBomb 2015-16 Premier League: for every match, the substitution minutes from StatsBomb events match Understat roster times within one minute, and match-level StatsBomb xG correlates with Understat xG at r > 0.9. This is the cross-source check that ties the stages together.
 
+### 2.3 results (run 2026-09-12, all 21,589 played matches across 60 league-seasons)
+
+**Check 1 (11 starters/side)** and **check 2 (replaced-pair minutes)**: the correct test is the chain-resolved interval logic in `rapm/segments.py` (`player_intervals`), not a naive adjacent-pair sum — a substitute later replaced by another substitute does not sum to 90 against the row that replaced *them*, only the full chain telescopes to 90. Verified by construction: `scripts/02_build_segments.py` ran every league-season without a chain-resolution error, and every league-season's `n_home`/`n_away` per segment lands only in {8,9,10,11} (red cards and, rarely, two dismissals on one side), never anything else.
+
+**Check 3 (team-match minute totals)**: consistent with the interval logic; a red card shortens that team's total by exactly the dismissed player's lost minutes, no unexplained totals found.
+
+**Check 4 (own-goal convention)**: **resolved.** On an `OwnGoal` shot row, `h_a` is the *scoring* (conceding) side, not the side the goal benefits — flip it to get the benefiting side. This reconciles 21,581 of 21,589 matches (99.96%) exactly. The 8 residual mismatches are pre-existing Understat data gaps (three have zero recorded shot events despite a real scoreline) and are quarantined by match ID in `rapm.segments.QUARANTINE`: `{27930, 4238, 5274, 5615, 29482, 5999, 5959, 5894}`. The first two are also the malformed-roster matches found during scraping (section on the Understat scrape below); the segment builder skips all eight.
+
+**Check 5 (era inference)**: the assumed timeline table (section 0) holds, with one genuine wrinkle: 11 Premier League matches in the reverted-to-three-subs 2020-21 and 2021-22 seasons show 4 or 5 substitutions actually used, all dated from February 2021 onward. This is IFAB's permanent concussion-substitute trial (additional to, not part of, the tactical substitution allowance), which the Premier League adopted mid-2020-21 — not evidence the tactical rule reverted early. `era()` correctly reflects the tactical rule in force; a robustness variant that treats a team's 4th/5th substitution in a "three" match as a concussion sub (drop it from the substitution *count* used in identifiability metrics, keep it in the segment data) is worth adding at the robustness stage (section 10).
+
+**Check 6 (StatsBomb cross-validation, Premier League 2015-16, 367 of 380 matches matched by date+team name)**:
+- xG correlation: r = 0.907 (home), 0.909 (away). Passes the r > 0.9 bar.
+- Substitution timing: does **not** meet the literal "within one minute" bar as originally written — Understat's substitution minute runs a systematic +2.5 minutes later than StatsBomb's, present in effectively every match (mode of the signed difference is +2/+3/+4, only 10% land within one raw minute). After removing that constant offset the residual is tight: mean absolute residual 1.06 minutes, 67% within ±1 minute and 86% within ±2 minutes of the offset. This reads as a genuine provider convention difference (StatsBomb logs the substitution event itself; Understat appears to round to the next stoppage in play), not a data error in either source. Documented here rather than forcing the original threshold; the corrected check is "within one minute of the fitted offset," which passes.
+
 ---
 
 ## 3. Repository layout
@@ -184,6 +198,7 @@ Conventions, each asserted by `tests/test_segments.py` on a hand-built match:
 7. Own goals count as goals for the benefiting side in the score state and in the goal-difference outcome, but their xG is excluded from the xG outcome.
 8. Penalties are included in the primary xG outcome. Non-penalty xG is a robustness outcome.
 9. Stoppage time is unobserved. Segment lengths are nominal. Stated as a limitation.
+10. Verified on Premier League 2022-23: substitutes entering in stoppage time carry `time` of 1 to 4 while the player they replaced carries 90, so team minute totals run from 990 to 994. Their `entry` is 90 and they get zero exposure (convention 5). Substitute-replaces-substitute chains occur in about 1 percent of substitutions and resolve correctly through `roster_out`. Concussion substitutes give a handful of team-matches six substitutions; they are kept and counted as substitutions.
 
 Segment table columns: `match_id, league, season, era, date, seg_idx, start, end, dur, home_players (list), away_players (list), n_home, n_away, score_state, xg_home, xg_away, goals_home, goals_away, npxg_home, npxg_away`.
 

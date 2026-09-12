@@ -25,5 +25,8 @@ packages = ["rapm"]
 [tool.ruff]
 line-length = 100
 
+[tool.ruff.lint]
+ignore = ["C408"]  # dict(...) reads better than a literal for these wide, named-field rows
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
